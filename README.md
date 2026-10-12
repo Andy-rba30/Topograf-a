@@ -5,10 +5,10 @@ aunque los dos archivos estén georreferenciados, y recoge los cambios hechos en
 
 | Repositorio | Rama | Qué añade |
 |---|---|---|
-| [Andy-rba30/revit-mcp](https://github.com/Andy-rba30/revit-mcp) | `feature/coordenadas-compartidas` (parte de `migracion-mcp2`, la rama por defecto) | `get_project_coordinates`, `set_project_coordinates` y el parámetro `placement` en `link_file` |
-| [Andy-rba30/civil3d-mcp](https://github.com/Andy-rba30/civil3d-mcp) | `feature/extension-superficie` (parte de `main`) | `extension_superficie` (1.4.0) y la sección 7 de `INSTRUCCIONES_AGENTE.md` con el flujo completo |
+| [Andy-rba30/revit-mcp](https://github.com/Andy-rba30/revit-mcp) | **fusionado en `main`** (PR #24, versión 0.6.5; rama `feature/coordenadas-compartidas-main`) | `shared_coordinates`, `units` y `at_point_mm` en `set_project_location`; `placement` y `extents` en `link_file`; `shared_coordinates_set` y `site` en la ubicación del proyecto; sección 2f de `INSTRUCCIONES_AGENTE.md` |
+| [Andy-rba30/civil3d-mcp](https://github.com/Andy-rba30/civil3d-mcp) | **fusionado en `main`** (PR #4, versión 1.4.0) | `extension_superficie` y la sección 7 de `INSTRUCCIONES_AGENTE.md` con el flujo completo |
 
-Los mismos cambios están en `parches/` como parches `git am`, por si las ramas se rehacen.
+Nota: el PR #23 de revit-mcp (rama `feature/coordenadas-compartidas`) se cerró sin fusionar porque partía de `migracion-mcp2`, 70 commits por detrás de `main`, con herramientas distintas. Sobre `main` las herramientas ya existían con otros nombres (`set_project_location`, `get_revit_model_info(include=["location"])`, `import_from_civil`), así que allí la solución se integró en ellas: los nombres `get_project_coordinates` y `set_project_coordinates` de este documento corresponden en `main` a `get_revit_model_info(include=["location"])` y a `set_project_location(shared_coordinates=...)`. Los parches de `parches/` son los del PR #23 y el PR #4; el commit fusionado en revit-mcp es el de la rama `feature/coordenadas-compartidas-main`.
 
 ## El problema
 
