@@ -5,8 +5,8 @@ aunque los dos archivos estén georreferenciados, y recoge los cambios hechos en
 
 | Repositorio | Rama | Qué añade |
 |---|---|---|
-| [Andy-rba30/revit-mcp](https://github.com/Andy-rba30/revit-mcp) | `feature/coordenadas-compartidas` | `get_project_coordinates`, `set_project_coordinates` y el parámetro `placement` en `link_file` |
-| [Andy-rba30/civil3d-mcp](https://github.com/Andy-rba30/civil3d-mcp) | `feature/extension-superficie` | `extension_superficie` (1.4.0) y la sección 7 de `INSTRUCCIONES_AGENTE.md` con el flujo completo |
+| [Andy-rba30/revit-mcp](https://github.com/Andy-rba30/revit-mcp) | `feature/coordenadas-compartidas` (parte de `migracion-mcp2`, la rama por defecto) | `get_project_coordinates`, `set_project_coordinates` y el parámetro `placement` en `link_file` |
+| [Andy-rba30/civil3d-mcp](https://github.com/Andy-rba30/civil3d-mcp) | `feature/extension-superficie` (parte de `main`) | `extension_superficie` (1.4.0) y la sección 7 de `INSTRUCCIONES_AGENTE.md` con el flujo completo |
 
 Los mismos cambios están en `parches/` como parches `git am`, por si las ramas se rehacen.
 
