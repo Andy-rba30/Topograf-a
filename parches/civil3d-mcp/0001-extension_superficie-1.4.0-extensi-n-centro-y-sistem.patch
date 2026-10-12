@@ -1,0 +1,490 @@
+From 5c3bc31542ac9d67bfc60bb9948003fa83cdba9b Mon Sep 17 00:00:00 2001
+From: Andy-rba30 <hecarturo2104@gmail.com>
+Date: Mon, 12 Oct 2026 17:31:42 +0000
+Subject: [PATCH] =?UTF-8?q?extension=5Fsuperficie=20(1.4.0):=20extensi?=
+ =?UTF-8?q?=C3=B3n,=20centro=20y=20sistema=20de=20coordenadas=20para=20geo?=
+ =?UTF-8?q?rreferenciar=20Revit?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Para vincular una superficie en Revit sin el aviso "muy lejos del origen" hay
+que fijar primero las coordenadas compartidas del modelo de Revit con las
+coordenadas reales de su origen interno y vincular el DWG "por coordenadas
+compartidas". Esta herramienta de lectura da los datos que hacen falta:
+
+- extension_superficie (Herramientas.Superficies.cs, contexto Aplicacion con
+  bloqueo de lectura): Surface.GetGeneralProperties → mínimos y máximos de X,
+  Y y cota, centro, origen_sugerido (centro redondeado a 100 unidades; cota a
+  10), número de puntos; UnitZoneSettings.CoordinateSystemCode y DrawingUnits
+  del dibujo; avisos si la diagonal supera los 16 km recomendados por Autodesk
+  o los 33 km que Revit admite.
+- INSTRUCCIONES_AGENTE.md, sección 7: flujo completo con el MCP de Revit
+  (get_project_coordinates → set_project_coordinates → link_file placement
+  shared) y por qué nunca se vincula "origen con origen".
+- Sustitutos de CompilarSinCivil con los tipos nuevos; miembros anotados como
+  por verificar; prompt de validación VALIDACION_14.md (pasos 2 y 9 decisivos).
+- Versión 1.4.0 en plugin, bundle y puente; probar_servidor.py acepta 1.3.x y
+  1.4.x en /ping; las pruebas del puente que fijaban 1.3.3 pasan a 1.4.0.
+
+El C# no se compiló en esta sesión (sin dotnet); la integración continua lo
+compila contra los sustitutos y la validación real queda para VALIDACION_14.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0184tEmjsFiA91AhNaPZWBxL
+---
+ ArbaMcp.Nucleo/ArbaMcp.Nucleo.csproj          |  2 +-
+ ArbaMcp/ArbaMcp.csproj                        |  2 +-
+ ArbaMcp/Bundle/PackageContents.xml            |  4 +-
+ ArbaMcp/CONTRATO.md                           |  3 +-
+ ArbaMcp/Herramientas.Superficies.cs           | 68 +++++++++++++
+ ArbaMcp/LEEME.md                              |  2 +-
+ ArbaMcp/pruebas/probar_servidor.py            |  2 +-
+ PuenteMcp/INSTRUCCIONES_AGENTE.md             | 17 +++-
+ PuenteMcp/main.py                             |  2 +-
+ PuenteMcp/tests/test_puente.py                |  2 +-
+ PuenteMcp/tests/test_puente_13.py             |  2 +-
+ README.md                                     |  2 +-
+ .../CompilarSinCivil/Stubs/Civil3D.cs         | 22 +++++
+ herramientas-dev/VALIDACION_14.md             | 98 +++++++++++++++++++
+ .../miembros_por_verificar_civil3d.md         | 15 +++
+ 15 files changed, 230 insertions(+), 13 deletions(-)
+ create mode 100644 herramientas-dev/VALIDACION_14.md
+
+diff --git a/ArbaMcp.Nucleo/ArbaMcp.Nucleo.csproj b/ArbaMcp.Nucleo/ArbaMcp.Nucleo.csproj
+index df89060..909a65e 100644
+--- a/ArbaMcp.Nucleo/ArbaMcp.Nucleo.csproj
++++ b/ArbaMcp.Nucleo/ArbaMcp.Nucleo.csproj
+@@ -11,7 +11,7 @@
+     <OutputType>Library</OutputType>
+     <AssemblyName>ArbaMcp.Nucleo</AssemblyName>
+     <RootNamespace>ArbaMcp.Nucleo</RootNamespace>
+-    <Version>1.3.3</Version>
++    <Version>1.4.0</Version>
+     <Nullable>disable</Nullable>
+     <ImplicitUsings>disable</ImplicitUsings>
+     <GenerateDocumentationFile>false</GenerateDocumentationFile>
+diff --git a/ArbaMcp/ArbaMcp.csproj b/ArbaMcp/ArbaMcp.csproj
+index 593d47d..7c5e8a6 100644
+--- a/ArbaMcp/ArbaMcp.csproj
++++ b/ArbaMcp/ArbaMcp.csproj
+@@ -7,7 +7,7 @@
+     <OutputType>Library</OutputType>
+     <AssemblyName>ArbaMcp</AssemblyName>
+     <RootNamespace>ArbaMcp</RootNamespace>
+-    <Version>1.3.3</Version>
++    <Version>1.4.0</Version>
+     <Nullable>disable</Nullable>
+     <ImplicitUsings>disable</ImplicitUsings>
+     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+diff --git a/ArbaMcp/Bundle/PackageContents.xml b/ArbaMcp/Bundle/PackageContents.xml
+index bad8e69..4e4d0f8 100644
+--- a/ArbaMcp/Bundle/PackageContents.xml
++++ b/ArbaMcp/Bundle/PackageContents.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <!-- Paquete de carga automática. Se copia a %APPDATA%\Autodesk\ApplicationPlugins\ArbaMcp.bundle -->
+ <ApplicationPackage SchemaVersion="1.0" AutodeskProduct="AutoCAD"
+-                    AppVersion="1.3.3"
++                    AppVersion="1.4.0"
+                     Description="Conector entre Civil 3D y un agente de IA por MCP (pestaña ARBA)"
+                     Author="ARBA"
+                     Name="ArbaMcp"
+@@ -12,7 +12,7 @@
+     <RuntimeRequirements OS="Win64" Platform="AutoCAD|Civil3D" SeriesMin="R26.0" SeriesMax="R26.0" SupportPath="./Contents" />
+     <ComponentEntry AppName="ArbaMcp"
+                     AppType=".NET"
+-                    Version="1.3.3"
++                    Version="1.4.0"
+                     ModuleName="./Contents/ArbaMcp.dll"
+                     AppDescription="Servidor local en 127.0.0.1:8765 para el puente MCP; botón Conexión IA en la pestaña ARBA"
+                     LoadOnAutoCADStartup="True"
+diff --git a/ArbaMcp/CONTRATO.md b/ArbaMcp/CONTRATO.md
+index a3d7c6e..65cfffc 100644
+--- a/ArbaMcp/CONTRATO.md
++++ b/ArbaMcp/CONTRATO.md
+@@ -22,7 +22,7 @@ ejecuta en el contexto que la herramienta declara en `Herramienta.Contexto`:
+ | Contexto | Qué hace | Espera a que Civil 3D esté libre | Herramientas |
+ |---|---|---|---|
+ | `Documento` (por defecto) | Contexto de comando del dibujo activo (`DocumentManager.ExecuteInCommandContextAsync`): la herramienta corre como un comando más, con el documento bloqueado y los gráficos actualizados al terminar. AutoCAD la anota como **una entrada `Executefunction` del menú Deshacer** (validado el 28/09/2026) | Sí | Todas las de escritura del dibujo, y `listar_lineas_muestreo` (abre el grupo para escritura con `fuentes=true`) |
+-| `Aplicacion` | Contexto de aplicación en el hilo principal. Las lecturas y las simulaciones bloquean el dibujo **en modo lectura** (`DocumentLockMode.Read`): un bloqueo de escritura fuera de un comando deja un `Grupo de comandos` en el menú Deshacer aunque no cambie nada (validado el 28/09/2026 con la 1.3.0); el de lectura no lo deja (validado el 28/09/2026 con la 1.3.1: ni las lecturas ni las simulaciones dejan entrada) | Sí | Desde 1.3.0, todas las de solo lectura (`listar_*`, `estado_corredor`, `punto_a_pk`, `pk_a_punto`, `cota_superficie`, `interseccion_ejes`); desde 1.3.1, también cualquier herramienta de escritura llamada con `simular=true`; `abrir_dibujo`, el envío de `ejecutar_comando` y de las exportaciones |
++| `Aplicacion` | Contexto de aplicación en el hilo principal. Las lecturas y las simulaciones bloquean el dibujo **en modo lectura** (`DocumentLockMode.Read`): un bloqueo de escritura fuera de un comando deja un `Grupo de comandos` en el menú Deshacer aunque no cambie nada (validado el 28/09/2026 con la 1.3.0); el de lectura no lo deja (validado el 28/09/2026 con la 1.3.1: ni las lecturas ni las simulaciones dejan entrada) | Sí | Desde 1.3.0, todas las de solo lectura (`listar_*`, `estado_corredor`, `punto_a_pk`, `pk_a_punto`, `cota_superficie`, `extension_superficie`, `interseccion_ejes`); desde 1.3.1, también cualquier herramienta de escritura llamada con `simular=true`; `abrir_dibujo`, el envío de `ejecutar_comando` y de las exportaciones |
+ | `Inmediato` | Contexto de aplicación, sin esperar y por delante de los demás trabajos | No | `ping`, `leer_historial`, `leer_log`, `leer_variable`, `capturar_pantalla`, los ESC de `ejecutar_comando` |
+ 
+ "Libre" significa `CMDACTIVE = 0` y ventana principal habilitada (sin cuadro de diálogo modal). Los trabajos
+@@ -117,6 +117,7 @@ El historial del plugin (`leer_historial`) también se escribe en `%LOCALAPPDATA
+ | `punto_a_pk` | alineamiento*, x*, y* | pk, desplazamiento, lado (`Alignment.StationOffset`) |
+ | `pk_a_punto` | alineamiento*, pk*, desplazamiento, perfil | x, y (`Alignment.PointLocation`) y `cota` si se pasa `perfil` (`Profile.ElevationAt`) |
+ | `cota_superficie` | superficie*, x*, y* | cota (`Surface.FindElevationAtXY`) o error si el punto está fuera |
++| `extension_superficie` | superficie* | min_x, max_x, min_y, max_y, min_z, max_z, ancho_x, alto_y, diagonal, centro (x, y, z), `origen_sugerido` (este, norte redondeados a 100 unidades; cota a 10), n_puntos, `sistema_coordenadas` (codigo, unidades, nota), avisos[] (diagonal mayor de 16 km o de 33 km). `Surface.GetGeneralProperties` y `UnitZoneSettings.CoordinateSystemCode`. Sirve para fijar las coordenadas compartidas de Revit (`set_project_coordinates` del MCP de Revit) antes de vincular el DWG con `placement=shared` |
+ | `interseccion_ejes` | alineamiento_a*, alineamiento_b* | metodo, n, cruces[] (x, y, pk_a, pk_b). Usa `Entity.IntersectWith`; si no devuelve puntos, muestrea cada 0.5 m |
+ | `estado_corredor` | corredor* | esta_desactualizado, reconstruir_automatico, ultima_reconstruccion (de las hechas por MCP), n_lineas_base, superficies[] (nombre, codigos_enlace[], codigos_punto[], codigos_lineas_caracteristicas[], contornos[] (nombre, tipo, usar_como_exterior), esta_desactualizada) |
+ 
+diff --git a/ArbaMcp/Herramientas.Superficies.cs b/ArbaMcp/Herramientas.Superficies.cs
+index 75d0dd1..2405022 100644
+--- a/ArbaMcp/Herramientas.Superficies.cs
++++ b/ArbaMcp/Herramientas.Superficies.cs
+@@ -307,6 +307,74 @@ namespace ArbaMcp
+                 }
+             });
+ 
++            Registrar(new Herramienta
++            {
++                Nombre = "extension_superficie",
++                Contexto = ContextoEjecucion.Aplicacion,   // lectura: sin entrada en el menú Deshacer (ver CONTRATO, Contextos)
++                Descripcion = "Extensión de una superficie (Surface.GetGeneralProperties): mínimos y máximos de X (este), Y (norte) y cota, centro, número de puntos y el sistema de coordenadas del dibujo (UnitZoneSettings.CoordinateSystemCode). Para llevar la superficie a Revit por coordenadas compartidas: pasa 'origen_sugerido' (centro redondeado) a set_project_coordinates del MCP de Revit y vincula el DWG con link_file placement='shared'. Avisa si la superficie supera los 16 km recomendados o los 33 km que admite Revit.",
++                Parametros = { P("superficie", "string", "Nombre de la superficie", true) },
++                Ejecutar = a =>
++                {
++                    var doc = DocActivo();
++                    string nombre, tipo;
++                    double minX, maxX, minY, maxY, minZ, maxZ;
++                    long nPuntos;
++                    using (BloquearParaLeer(doc))
++                    using (var tr = doc.Database.TransactionManager.StartTransaction())
++                    {
++                        var su = (CivSurface)tr.GetObject(BuscarSuperficie(tr, Requerido(a, "superficie")), OpenMode.ForRead);
++                        var p = su.GetGeneralProperties();
++                        nombre = su.Name;
++                        tipo = TipoSuperficie(su);
++                        minX = p.MinimumCoordinateX; maxX = p.MaximumCoordinateX;
++                        minY = p.MinimumCoordinateY; maxY = p.MaximumCoordinateY;
++                        minZ = p.MinimumElevation; maxZ = p.MaximumElevation;
++                        nPuntos = Convert.ToInt64(p.NumberOfPoints);
++                        tr.Commit();
++                    }
++
++                    // Sistema de coordenadas y unidades del dibujo (Configuración del dibujo → Unidades y zona)
++                    string codigo = null, unidades = null, nota = null;
++                    try
++                    {
++                        var uz = CivilApplication.ActiveDocument.Settings.DrawingSettings.UnitZoneSettings;
++                        codigo = uz.CoordinateSystemCode;
++                        unidades = uz.DrawingUnits.ToString();
++                    }
++                    catch (Exception ex) { nota = "No se pudo leer el sistema de coordenadas del dibujo: " + ex.Message; }
++                    if (string.IsNullOrWhiteSpace(codigo))
++                    {
++                        codigo = null;
++                        nota = nota ?? "El dibujo no tiene sistema de coordenadas asignado; las coordenadas son las del WCS tal cual.";
++                    }
++
++                    // Límites de Revit: 16 km (10 millas) recomendados por Autodesk, 33 km (20 millas) de aviso y cambio de posición
++                    double aMetros = string.Equals(unidades, "Feet", StringComparison.OrdinalIgnoreCase) ? 0.3048 : 1.0;
++                    double anchoX = maxX - minX, altoY = maxY - minY;
++                    double diagonal = Math.Sqrt(anchoX * anchoX + altoY * altoY);
++                    double diagonalKm = diagonal * aMetros / 1000.0;
++                    var avisos = new List<string>();
++                    if (diagonalKm > 32.187)
++                        avisos.Add("La superficie mide " + N(diagonalKm) + " km en diagonal: supera los 33 km (20 millas) que Revit admite; aunque se centre, Revit avisará y forzará 'centro con centro'. Recorta la superficie o el DWG antes de vincular.");
++                    else if (diagonalKm > 16.093)
++                        avisos.Add("La superficie mide " + N(diagonalKm) + " km en diagonal: supera los 16 km (10 millas) recomendados por Autodesk; puede perderse precisión en los bordes.");
++
++                    double centroX = (minX + maxX) / 2, centroY = (minY + maxY) / 2, centroZ = (minZ + maxZ) / 2;
++                    return new
++                    {
++                        superficie = nombre,
++                        tipo_superficie = tipo,
++                        n_puntos = nPuntos,
++                        min_x = N(minX), max_x = N(maxX), min_y = N(minY), max_y = N(maxY), min_z = N(minZ), max_z = N(maxZ),
++                        ancho_x = N(anchoX), alto_y = N(altoY), diagonal = N(diagonal),
++                        centro = new { x = N(centroX), y = N(centroY), z = N(centroZ) },
++                        origen_sugerido = new { este = Math.Round(centroX / 100) * 100, norte = Math.Round(centroY / 100) * 100, cota = Math.Round(centroZ / 10) * 10 },
++                        sistema_coordenadas = new { codigo, unidades, nota },
++                        avisos
++                    };
++                }
++            });
++
+             Registrar(new Herramienta
+             {
+                 Nombre = "interseccion_ejes",
+diff --git a/ArbaMcp/LEEME.md b/ArbaMcp/LEEME.md
+index e324735..9d9a2d3 100644
+--- a/ArbaMcp/LEEME.md
++++ b/ArbaMcp/LEEME.md
+@@ -62,7 +62,7 @@ Copia el PNG de tu icono a `Recursos\ARBA_BTN_MCP.png` (32×32) y recompila. Ver
+ ## Herramientas
+ 
+ - Generales: `ping`, `listar_alineamientos`, `listar_perfiles`, `listar_pvis`, `listar_superficies`, `abrir_dibujo`, `ejecutar_comando` (último recurso; espera a que el comando termine, con tiempo límite y `undo` opcional), `leer_historial`, `leer_log`, `leer_variable`, `capturar_pantalla`.
+-- Lectura por API .NET: `listar_corredores`, `listar_regiones`, `listar_objetivos`, `listar_ensamblajes`, `listar_intersecciones`, `listar_lineas_muestreo`, `estado_corredor`, `punto_a_pk`, `pk_a_punto`, `cota_superficie`, `interseccion_ejes`.
++- Lectura por API .NET: `listar_corredores`, `listar_regiones`, `listar_objetivos`, `listar_ensamblajes`, `listar_intersecciones`, `listar_lineas_muestreo`, `estado_corredor`, `punto_a_pk`, `pk_a_punto`, `cota_superficie`, `extension_superficie` (extensión, centro y sistema de coordenadas, para georreferenciar Revit), `interseccion_ejes`.
+ - Escritura por API .NET (todas con `simular`): `asignar_ensamblaje_region`, `asignar_objetivo`, `asignar_objetivos` (lote), `asignar_objetivos_superficie`, `deshacer_objetivos` (1.3.3), `dividir_region`, `establecer_rango_region`, `establecer_frecuencia`, `establecer_frecuencias` (lote), `agregar_estacion_region`, `reconstruir_corredor`, `agregar_superficie_corredor`, `agregar_codigo_superficie_corredor`, `agregar_contorno_superficie_corredor`, `agregar_linea_rotura_superficie`, `pegar_superficie`, `reconstruir_superficie`, `guardar_dibujo`, `guardar_copia`.
+ - Exportación por comando (no hay API): `exportar_landxml`, `exportar_imx`.
+ 
+diff --git a/ArbaMcp/pruebas/probar_servidor.py b/ArbaMcp/pruebas/probar_servidor.py
+index 5a93194..d9cdb79 100644
+--- a/ArbaMcp/pruebas/probar_servidor.py
++++ b/ArbaMcp/pruebas/probar_servidor.py
+@@ -367,7 +367,7 @@ def pruebas_fase13_servidor():
+     except Exception:
+         pass
+     resultado("ping sin token responde 200", r is not None and r.status_code == 200)
+-    resultado("ping sin token devuelve ok, servidor y version 1.3.x y nada más", cuerpo.get("ok") is True and cuerpo.get("servidor") == "ArbaMcp" and str(cuerpo.get("version", "")).startswith("1.3.") and set(cuerpo) == {"ok", "servidor", "version"}, str(cuerpo)[:160])
++    resultado("ping sin token devuelve ok, servidor y version 1.3.x o posterior y nada más", cuerpo.get("ok") is True and cuerpo.get("servidor") == "ArbaMcp" and str(cuerpo.get("version", "")).startswith(("1.3.", "1.4.")) and set(cuerpo) == {"ok", "servidor", "version"}, str(cuerpo)[:160])
+     r = test_req("GET /ping con token malo (200)", "GET", "/ping", {"X-Arba-Token": "malo"})
+     resultado("ping con token malo también responde 200", r is not None and r.status_code == 200)
+     r = test_req("GET /tools sin token (401)", "GET", "/tools", {})
+diff --git a/PuenteMcp/INSTRUCCIONES_AGENTE.md b/PuenteMcp/INSTRUCCIONES_AGENTE.md
+index 32c1f91..be52d8f 100644
+--- a/PuenteMcp/INSTRUCCIONES_AGENTE.md
++++ b/PuenteMcp/INSTRUCCIONES_AGENTE.md
+@@ -4,7 +4,7 @@ Estas herramientas actúan sobre el dibujo activo de Civil 3D 2027 a través del
+ 
+ ## 1. Precedencia de herramientas
+ 
+-1. **API primero**: usa siempre la herramienta específica (`listar_*`, `asignar_*`, `establecer_*`, `agregar_*`, `reconstruir_*`, `pegar_superficie`, `guardar_*`, `punto_a_pk`, `pk_a_punto`, `cota_superficie`, `interseccion_ejes`).
++1. **API primero**: usa siempre la herramienta específica (`listar_*`, `asignar_*`, `establecer_*`, `agregar_*`, `reconstruir_*`, `pegar_superficie`, `guardar_*`, `punto_a_pk`, `pk_a_punto`, `cota_superficie`, `extension_superficie`, `interseccion_ejes`).
+ 2. **`ejecutar_comando` solo si ninguna herramienta cubre la acción**. Es el último recurso: envía texto a la línea de comandos, no sabe qué ha cambiado y no verifica nada. Por defecto ya no envuelve la orden en UNDO; pásale `undo=true` si quieres un grupo de deshacer.
+ 3. **`capturar_pantalla` solo para diagnosticar**: úsala cuando una llamada devuelve "tiempo agotado" o sospechas que hay un cuadro de diálogo abierto. No la uses para "ver" el modelo: los datos se leen con las herramientas de lectura.
+ 4. `leer_historial` y `leer_log` sirven para saber qué se ejecutó y con qué resultado; `leer_log` devuelve una línea JSON por cada escritura (hora, herramienta, args, ok, ms, error).
+@@ -77,7 +77,20 @@ Después de cada escritura comprueba `esta_desactualizado` (corredor) o `esta_de
+ 
+ `exportar_landxml` y `exportar_imx` no tienen API .NET: envían el comando correspondiente y el usuario debe completar el cuadro de diálogo en Civil 3D. Indícale qué alineamientos y superficies marcar y comprueba `existe=true` en la respuesta.
+ 
+-## 7. Qué lleva cada respuesta
++## 7. Llevar una superficie a Revit (coordenadas compartidas)
++
++Revit tiene un origen interno que no se mueve y toda su geometría debe quedar a menos de 16 km de él (a partir de 33 km avisa y cambia la posición a "centro con centro" por su cuenta). Una superficie en UTM está a cientos de kilómetros del 0,0, así que **nunca se vincula "origen con origen"**: el aviso "muy lejos del origen" sale siempre, por muy georreferenciados que estén los dos archivos. El flujo correcto, con el MCP de Revit conectado:
++
++1. `listar_superficies` y `extension_superficie` (superficie): anota `origen_sugerido` (este, norte, cota), `sistema_coordenadas.codigo` y `avisos`. Si hay un aviso de más de 33 km, recorta la superficie o el DWG antes de seguir; no hay posición que lo arregle.
++2. En Revit, `get_project_coordinates`: si `shared_coordinates_set` es false, el modelo nunca se georreferenció.
++3. En Revit, `set_project_coordinates` con `east`, `north`, `elevation` = `origen_sugerido` (en metros, `units="m"`) y `angle_degrees=0` si el DWG está alineado al norte de cuadrícula. Se hace una sola vez por modelo; si ya tenía coordenadas compartidas (por ejemplo adquiridas de otro modelo), no las cambies sin confirmar con el usuario.
++4. `guardar_dibujo` en Civil 3D si hay cambios sin guardar: Revit lee el DWG de disco.
++5. En Revit, `link_file` con la ruta del DWG y `placement="shared"`. Comprueba en la respuesta `extents.far_from_origin=false` y que `center_shared_m` coincide con el centro de la superficie; si `beyond_revit_limit` es true, Revit forzará "centro con centro" y hay que recortar.
++6. En Revit, el Toposolid se crea desde el vínculo ("Crear a partir de importación"); si el usuario lo pide por herramienta, `execute_revit_code`.
++
++Si Revit ya tenía el DWG vinculado "origen con origen", vuelve a vincularlo con `placement="shared"` después del paso 3: el vínculo viejo no se recoloca solo.
++
++## 8. Qué lleva cada respuesta
+ 
+ - Los argumentos de cada herramienta van dentro de `args` (`{"args": {"corredor": "Corredor 1"}}`).
+ - Toda respuesta trae los tiempos: `ms` (lo que tardó Civil 3D en la herramienta, medido por el plugin), `ms_espera` (lo que esperó en cola a que Civil 3D estuviera libre), `ms_ejecucion` (la herramienta en el hilo principal) y `ms_puente` (total visto desde el puente). Si el resultado es un objeto, van como claves suyas; si es una lista o un valor, la respuesta es `{"result": ..., "ms": ..., "ms_puente": ...}`.
+diff --git a/PuenteMcp/main.py b/PuenteMcp/main.py
+index 21dd76b..669bdd7 100644
+--- a/PuenteMcp/main.py
++++ b/PuenteMcp/main.py
+@@ -18,7 +18,7 @@ import uvicorn
+ from mcp.server.mcpserver import MCPServer
+ from pydantic import create_model, Field
+ 
+-__version__ = "1.3.3"
++__version__ = "1.4.0"
+ 
+ CARPETA = os.path.dirname(os.path.abspath(__file__))
+ 
+diff --git a/PuenteMcp/tests/test_puente.py b/PuenteMcp/tests/test_puente.py
+index 9dcf37e..2bea468 100644
+--- a/PuenteMcp/tests/test_puente.py
++++ b/PuenteMcp/tests/test_puente.py
+@@ -172,4 +172,4 @@ def test_construir_app_expone_mcp_y_sse(puente):
+     rutas = sorted(getattr(r, "path", "") for r in app.routes)
+     assert "/mcp" in rutas and "/sse" in rutas
+     assert puente.PUERTO_PUENTE == 8001
+-    assert puente.__version__ == "1.3.3"
++    assert puente.__version__ == "1.4.0"
+diff --git a/PuenteMcp/tests/test_puente_13.py b/PuenteMcp/tests/test_puente_13.py
+index da5e2a4..11c73b4 100644
+--- a/PuenteMcp/tests/test_puente_13.py
++++ b/PuenteMcp/tests/test_puente_13.py
+@@ -100,7 +100,7 @@ def test_un_nombre_retirado_responde_con_la_sustituta(servidor, puente, monkeypa
+     monkeypatch.setitem(puente.HERRAMIENTAS_RETIRADAS, "listar_objetivos_region", "listar_objetivos(corredor=..., linea_base=..., region=...)")
+     with pytest.raises(ToolError) as info:
+         ejecutar(puente.mcp._tool_manager.call_tool("listar_objetivos_region", {"args": {}}, None))
+-    assert "se retiró en 1.3.3" in str(info.value) and "listar_objetivos(" in str(info.value)
++    assert f"se retiró en {puente.__version__}" in str(info.value) and "listar_objetivos(" in str(info.value)
+     # si el nombre vuelve a existir en el plugin, gana la herramienta real
+     servidor.herramienta("listar_objetivos_region")
+     servidor.respuestas["listar_objetivos_region"] = {"ok": True, "result": []}
+diff --git a/README.md b/README.md
+index 90ed59a..3d457b9 100644
+--- a/README.md
++++ b/README.md
+@@ -10,7 +10,7 @@ Dos piezas, con la misma estructura que el conector de Revit:
+ | [`PuenteMcp`](PuenteMcp/) | Puente MCP en Python. Lee las herramientas del plugin y las expone al agente por `streamable-http`. Con `tests/` (pytest). | 8001 |
+ | [`herramientas-dev`](herramientas-dev/) | Prompts de validación para el agente local, tabla de miembros de la API por verificar, `InspectC3D` y `CompilarSinCivil`. | — |
+ 
+-Versión actual: **1.3.0** (plugin, bundle y puente).
++Versión actual: **1.4.0** (plugin, bundle y puente): añade `extension_superficie` y el flujo de superficies a Revit por coordenadas compartidas (`PuenteMcp/INSTRUCCIONES_AGENTE.md`, sección 7; validación en `herramientas-dev/VALIDACION_14.md`).
+ 
+ ## Instalar el plugin
+ 
+diff --git a/herramientas-dev/CompilarSinCivil/Stubs/Civil3D.cs b/herramientas-dev/CompilarSinCivil/Stubs/Civil3D.cs
+index 88d2e36..eac2a08 100644
+--- a/herramientas-dev/CompilarSinCivil/Stubs/Civil3D.cs
++++ b/herramientas-dev/CompilarSinCivil/Stubs/Civil3D.cs
+@@ -17,10 +17,24 @@ namespace Autodesk.Civil.ApplicationServices
+         public CorridorCollection CorridorCollection => new CorridorCollection();
+         public AssemblyCollection AssemblyCollection => new AssemblyCollection();
+         public IntersectionCollection IntersectionCollection => new IntersectionCollection();
++        public Autodesk.Civil.Settings.SettingsRoot Settings => new Autodesk.Civil.Settings.SettingsRoot();
+     }
+     public static class CivilApplication { public static CivilDocument ActiveDocument => new CivilDocument(); }
+ }
+ 
++namespace Autodesk.Civil
++{
++    public enum DrawingUnitType { Feet, Meters }
++}
++
++namespace Autodesk.Civil.Settings
++{
++    // Configuración del dibujo → Unidades y zona (extension_superficie)
++    public class SettingsUnitZone { public string CoordinateSystemCode { get; set; } public Autodesk.Civil.DrawingUnitType DrawingUnits { get; set; } }
++    public class SettingsDrawing { public SettingsUnitZone UnitZoneSettings => new SettingsUnitZone(); }
++    public class SettingsRoot { public SettingsDrawing DrawingSettings => new SettingsDrawing(); }
++}
++
+ namespace Autodesk.Civil.DatabaseServices
+ {
+     public class Entity : Autodesk.AutoCAD.DatabaseServices.Entity { public string Name { get; set; } public string Description { get; set; } }
+@@ -57,11 +71,19 @@ namespace Autodesk.Civil.DatabaseServices
+     }
+ 
+     // ---- superficies
++    public class GeneralSurfaceProperties
++    {
++        public double MinimumCoordinateX => 0; public double MaximumCoordinateX => 0;
++        public double MinimumCoordinateY => 0; public double MaximumCoordinateY => 0;
++        public double MinimumElevation => 0; public double MaximumElevation => 0; public double MeanElevation => 0;
++        public uint NumberOfPoints => 0;
++    }
+     public class Surface : Entity
+     {
+         public bool IsOutOfDate => false;
+         public void Rebuild() { }
+         public double FindElevationAtXY(double x, double y) => 0;
++        public GeneralSurfaceProperties GetGeneralProperties() => new GeneralSurfaceProperties();
+     }
+     public class DefinicionConCuenta : IEnumerable { public int Count => 0; public IEnumerator GetEnumerator() => new List<object>().GetEnumerator(); }
+     public class SurfaceOperationAddBreakline { }
+diff --git a/herramientas-dev/VALIDACION_14.md b/herramientas-dev/VALIDACION_14.md
+new file mode 100644
+index 0000000..19d746c
+--- /dev/null
++++ b/herramientas-dev/VALIDACION_14.md
+@@ -0,0 +1,98 @@
++# Prompt de validación de la 1.4.0 (civil3d-mcp) para el agente local
++
++Copia este texto tal cual en el agente que tiene conectados el MCP de Civil 3D y, para los pasos 6 a 9, el MCP de
++Revit. Requisitos previos:
++
++- Civil 3D 2027 abierto con **una copia** de un DWG georreferenciado (Configuración del dibujo → Unidades y zona con
++  un sistema asignado, por ejemplo `UTM84-18S`) que tenga al menos una superficie TIN que **no** genere ningún
++  corredor. Dibujo guardado en disco.
++- El plugin **1.4.0** se instala en el paso 0 desde la rama `feature/extension-superficie`; el bundle queda con
++  `ArbaMcp.dll` y `ArbaMcp.Nucleo.dll`. Puente reiniciado con el `main.py` de 1.4.0 y el cliente MCP reiniciado para
++  que cargue la lista de **44** herramientas.
++- Para los pasos 6 a 9: Revit 2027 con pyRevit y la extensión `revit-mcp` de la rama
++  `feature/coordenadas-compartidas` (herramientas `get_project_coordinates`, `set_project_coordinates` y `link_file`
++  con `placement`), con un **proyecto nuevo de prueba** abierto (nunca un modelo de entrega: el paso 8 cambia sus
++  coordenadas compartidas).
++- Reparto de papeles: el agente local **instala y verifica**; el código, la tabla de miembros y este prompt los mantiene
++  la sesión de desarrollo a partir del informe. El agente no edita ningún archivo del repositorio salvo su informe en
++  `herramientas-dev/informes/` y no hace commits.
++- **Lo que trae la 1.4.0**: la herramienta de lectura `extension_superficie` (extensión, centro, `origen_sugerido`,
++  sistema de coordenadas del dibujo y avisos de 16 km y 33 km) y la sección 7 de `INSTRUCCIONES_AGENTE.md` con el
++  flujo para vincular una superficie en Revit por coordenadas compartidas, sin el aviso "muy lejos del origen".
++  **Los pasos 2 y 9 son los decisivos.**
++- Miembros de la API que esta validación decide (`herramientas-dev/miembros_por_verificar_civil3d.md`, sección
++  1.4.0): `Surface.GetGeneralProperties()` y sus propiedades, y
++  `CivilDocument.Settings.DrawingSettings.UnitZoneSettings` (`CoordinateSystemCode`, `DrawingUnits`).
++
++---
++
++Eres el agente de validación de la versión 1.4.0 del conector Civil 3D MCP (plugin `ArbaMcp` + puente `PuenteMcp`).
++Trabajas sobre una **copia** del dibujo. Usa las herramientas MCP **por su nombre** (los argumentos van dentro de
++`args`), salvo en los pasos que indican PowerShell. Ejecuta los pasos en orden, anota la respuesta **literal** (JSON
++completo o, si es muy largo, las primeras 40 líneas) y **el tiempo total de cada paso**.
++
++Reglas:
++
++- **No marques OK lo que no viste.** Cada OK va con la respuesta literal.
++- Si un paso falla, anota el error literal y sigue con el siguiente salvo que el prompt diga que pares.
++- No uses `ejecutar_comando` para "arreglar" nada: si algo no funciona, es un hallazgo.
++
++## Pasos
++
++0. **Instalar.** Con Civil 3D cerrado, en PowerShell desde la raíz del repo en la rama `feature/extension-superficie`:
++   `powershell -ExecutionPolicy Bypass -File .\ArbaMcp\instalar.ps1`. Reinicia el puente y el cliente MCP. Abre Civil 3D
++   con la copia del DWG. `ping` → `version` debe ser `1.4.0`. Pide la lista de herramientas: deben ser 44 e incluir
++   `extension_superficie`. Si no, para aquí.
++
++1. **Elegir la superficie.** `listar_superficies`. Anota una superficie TIN con `corredor` nulo: la llamaremos `SUP`.
++
++2. **Extensión (decisivo).** `extension_superficie` con `superficie=SUP`. Anota el JSON completo. En Civil 3D abre
++   Propiedades de superficie → Estadísticas → General y compara: `min_x`/`max_x` con Mín./Máx. X, `min_y`/`max_y` con
++   Mín./Máx. Y, `min_z`/`max_z` con Elevación mín./máx. y `n_puntos` con Número de puntos (tolerancia 0,01 en
++   coordenadas; igualdad en puntos). Abre Configuración del dibujo → Unidades y zona y compara
++   `sistema_coordenadas.codigo` con el código de la zona y `sistema_coordenadas.unidades` con las unidades del dibujo.
++   Comprueba que `centro` es el punto medio de los mínimos y máximos, que `origen_sugerido.este`/`norte` son el centro
++   redondeado a 100 y `cota` el centro de cotas redondeado a 10, y que `avisos` está vacío si `diagonal` es menor de
++   16 000 m (si la superficie es mayor, debe traer el aviso correspondiente). OK solo si todo coincide.
++
++3. **Superficie sin sistema (opcional).** Si tienes un DWG sin sistema de coordenadas asignado, repite el paso 2 en él:
++   `sistema_coordenadas.codigo` debe ser `null` y `nota` debe decir que el dibujo no tiene sistema asignado.
++
++4. **Error controlado.** `extension_superficie` con `superficie=NO_EXISTE`. Esperado: `ok: false` con "No existe la
++   superficie 'NO_EXISTE'. Usa listar_superficies."
++
++5. **Sin entrada en Deshacer.** Abre el menú Deshacer de Civil 3D: los pasos 2 a 4 no deben haber añadido ninguna
++   entrada (`extension_superficie` es lectura en contexto `Aplicacion` con bloqueo de lectura). Anota `ms` del paso 2:
++   debe ser menor de 2000 ms aunque la superficie sea grande (lee propiedades, no recorre puntos).
++
++6. **Revit, estado inicial.** En el MCP de Revit, con el proyecto nuevo de prueba abierto: `get_project_coordinates`.
++   Esperado: `shared_coordinates_set: false` e `internal_origin` con `east`, `north` y `elevation` en 0.
++
++7. **Revit rechaza el vínculo sin coordenadas.** `link_file` con `file_path` = ruta de la copia del DWG y
++   `placement="shared"`. Esperado: error que empieza por "placement 'shared' needs shared coordinates" y que nombra
++   `set_project_coordinates`. No debe quedar ningún vínculo en Revit.
++
++8. **Georreferenciar Revit.** `set_project_coordinates` con `east`, `north` y `elevation` = `origen_sugerido` del
++   paso 2, `units="m"`, `angle_degrees=0`. Luego `get_project_coordinates`: `shared_coordinates_set: true` e
++   `internal_origin` igual a lo enviado (tolerancia 0,001 m). En Revit, Gestionar → Coordenadas → Especificar
++   coordenadas en un punto sobre el origen interno debe mostrar esos mismos valores.
++
++9. **Vincular por coordenadas compartidas (decisivo).** `link_file` con la ruta del DWG y `placement="shared"`.
++   Esperado: `ok` con `placement: shared`, `extents.far_from_origin: false`, `extents.beyond_revit_limit: false`,
++   `extents.max_distance_m` del orden de la mitad de la diagonal del paso 2 y `extents.center_shared_m` igual a
++   `centro` del paso 2 (tolerancia 1 m). En Revit **no debe aparecer** el cuadro "la geometría está muy lejos del
++   origen" ni ninguno parecido, y la superficie debe verse junto al origen interno en una vista 3D. Luego Gestionar →
++   Vínculos → la posición del DWG debe decir "Compartido". Si el cuadro aparece o `far_from_origin` es true, anota el
++   valor de `max_distance_m` y para aquí.
++
++10. **Comprobación cruzada.** Elige un punto conocido de la superficie (por ejemplo un vértice visible) y con
++    `cota_superficie` en Civil 3D y la cota del mismo punto en Revit (coordenadas compartidas, Z) comprueba que
++    coinciden (tolerancia 0,05 m).
++
++## Informe
++
++Guarda `herramientas-dev/informes/informe_validacion_14_<AAAAMMDD>.md` con: versión de Civil 3D y de Revit, DWG
++usado (nombre, sistema de coordenadas, `diagonal`), una tabla paso / resultado (OK, FALLO) / respuesta literal /
++tiempo, y una lista final de los miembros de la sección 1.4.0 de `miembros_por_verificar_civil3d.md` que pasan a
++`ejecutado en Civil 3D 2027` con la fecha. Si el paso 9 falla, incluye una captura (`capturar_pantalla`) del cuadro de
++Revit y el JSON completo de `link_file`.
+diff --git a/herramientas-dev/miembros_por_verificar_civil3d.md b/herramientas-dev/miembros_por_verificar_civil3d.md
+index fd5190f..7757572 100644
+--- a/herramientas-dev/miembros_por_verificar_civil3d.md
++++ b/herramientas-dev/miembros_por_verificar_civil3d.md
+@@ -103,3 +103,18 @@ suites de `probar_servidor.py` en `TODO OK`).
+ | método | `Corridor.CorridorSurfaces` → `CorridorSurface.SurfaceId` / `Name` comparados con el objetivo para rechazar la superficie del propio corredor (`ComprobarNoSuperficieDelCorredor`) | 2027 | `asignar_objetivo`, `asignar_objetivos` (elemento a `fallidos`), `asignar_objetivos_superficie`; `VALIDACION_13` paso 9b y fase 13 | ejecutado en Civil 3D 2027 (1.3.3, 28/09/2026, paso 9b: 'Interseccion 3' rechazada con `simular` y sin él, sin tocar el dibujo; en el lote va a `fallidos`; fase 13 OK) |
+ | método | Pila `Restauraciones` en memoria (handles de los `TargetIds` anteriores, `TargetToOption`, `UseSameSideTarget`) y `deshacer_objetivos`: `Database.TryGetObjectId(Handle)` para volver a los objetos anteriores y `SetTargets` con ellos, comprobando antes que los handles actuales son los que dejó la escritura | 2027 | `deshacer_objetivos` (1.3.3); `VALIDACION_13` pasos 9 y 14, prueba 6 de `--dwg` y fase 13 | ejecutado en Civil 3D 2027 (1.3.3, 28/09/2026, `VALIDACION_13` pasos 9 y 14, prueba 6 de `--dwg` y fase 13 `TODO OK`): devuelve el lote y la escritura individual, detecta el cambio posterior (`fallidos` con "ya no está como lo dejó la escritura"), deshace por `id`, y la entrada consumida desaparece de `pendientes` |
+ | propiedad | `Pendiente.MsEspera` / `MsEjecucion` medidos alrededor de `ExecuteInCommandContextAsync` (`ms_espera`, `ms_ejecucion` del envoltorio) | — | todas; paso 2 | ejecutado en Civil 3D 2027 (1.3.1, 28/09/2026: `ms_espera` y `ms_ejecucion` enteros y coherentes en todas las respuestas, por ejemplo 16 y 7 ms en `asignar_objetivo`; con Civil 3D ocupado la llamada se descarta antes de responder, así que la espera larga no se midió) |
++
++## 1.4.0 (`extension_superficie`, superficies a Revit): escrita sin compilar
++
++Herramienta de lectura `extension_superficie` (`Herramientas.Superficies.cs`, contexto `Aplicacion`, bloqueo de lectura)
++para georreferenciar un modelo de Revit antes de vincular el DWG por coordenadas compartidas (flujo en
++`PuenteMcp/INSTRUCCIONES_AGENTE.md`, sección 7; herramientas `get_project_coordinates`, `set_project_coordinates` y
++`link_file` con `placement` en el MCP de Revit, rama `feature/coordenadas-compartidas`). Escrita el 12/10/2026 sin
++Civil 3D: el código compila contra los sustitutos de `CompilarSinCivil`, los miembros nuevos entran como `por verificar`
++y se validan con `herramientas-dev/VALIDACION_14.md`.
++
++| Tipo | Miembro | Versión | Herramienta que lo usa | Estado |
++|---|---|---|---|---|
++| método | `Surface.GetGeneralProperties()` → `GeneralSurfaceProperties` | 2027 | `extension_superficie` | por verificar |
++| propiedad | `GeneralSurfaceProperties.MinimumCoordinateX`, `.MaximumCoordinateX`, `.MinimumCoordinateY`, `.MaximumCoordinateY`, `.MinimumElevation`, `.MaximumElevation`, `.NumberOfPoints` (uint; se lee con `Convert.ToInt64`) | 2027 | `extension_superficie` | por verificar (`VALIDACION_14` paso 2: comparar con Propiedades de superficie → Estadísticas) |
++| propiedad | `CivilDocument.Settings.DrawingSettings.UnitZoneSettings` (`Autodesk.Civil.Settings.SettingsUnitZone`): `.CoordinateSystemCode` (string; vacío sin sistema asignado), `.DrawingUnits` (`Autodesk.Civil.DrawingUnitType`, `Meters`/`Feet`) | 2027 | `extension_superficie` (`sistema_coordenadas`; con `Feet` convierte la diagonal a metros para los avisos) | por verificar (`VALIDACION_14` paso 2: comparar con Configuración del dibujo → Unidades y zona) |
+-- 
+2.43.0
+

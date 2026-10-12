@@ -1,0 +1,1048 @@
+From 1c37519a0a4bfc52452dd1fd14ff89cff7e00cfc Mon Sep 17 00:00:00 2001
+From: Andy-rba30 <hecarturo2104@gmail.com>
+Date: Mon, 12 Oct 2026 17:31:22 +0000
+Subject: [PATCH] Coordenadas compartidas: get/set_project_coordinates y
+ placement en link_file
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Un DWG georreferenciado (superficie de Civil 3D en UTM) vinculado "origen con
+origen" cae a cientos de kilómetros del origen interno de Revit, que avisa a
+partir de 33 km y cambia la posición por su cuenta. link_file fijaba siempre
+ImportPlacement.Origin, así que el aviso salía en cada vínculo.
+
+- revit_mcp/coordinates.py + tools/coordinates_tools.py: get_project_coordinates
+  (posición del origen interno en coordenadas compartidas, punto base, punto de
+  replanteo, sitio) y set_project_coordinates (ProjectLocation.SetProjectPosition,
+  el "Especificar coordenadas en un punto" de la interfaz; si la ubicación activa
+  es la "Internal" de solo lectura activa otra o la duplica).
+- link_file: parámetro placement (origin, shared, center, site) aplicado a CAD y
+  RVT; con shared y un CAD exige coordenadas compartidas ya fijadas (400 con la
+  explicación); la respuesta dice a qué distancia del origen quedó el vínculo y
+  avisa a partir de 16 km.
+- revit_mcp/coordinates_core.py: conversiones, nombres de posición y evaluación
+  de extensión sin pyRevit, con pruebas en tests/test_coordinates_core.py (33).
+- README, CONTRATO.md y LLM.txt actualizados (50 herramientas; estas dos usan
+  metros por defecto).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0184tEmjsFiA91AhNaPZWBxL
+---
+ CONTRATO.md                    |   4 +-
+ LLM.txt                        |   9 +-
+ README.md                      |  35 ++++-
+ revit_mcp/coordinates.py       | 249 +++++++++++++++++++++++++++++++++
+ revit_mcp/coordinates_core.py  | 152 ++++++++++++++++++++
+ revit_mcp/interop.py           | 105 +++++++++++++-
+ startup.py                     |   4 +
+ tests/test_coordinates_core.py | 111 +++++++++++++++
+ tools/__init__.py              |   2 +
+ tools/coordinates_tools.py     |  81 +++++++++++
+ tools/interop_tools.py         |  20 ++-
+ 11 files changed, 755 insertions(+), 17 deletions(-)
+ create mode 100644 revit_mcp/coordinates.py
+ create mode 100644 revit_mcp/coordinates_core.py
+ create mode 100644 tests/test_coordinates_core.py
+ create mode 100644 tools/coordinates_tools.py
+
+diff --git a/CONTRATO.md b/CONTRATO.md
+index 188585d..5c41c49 100644
+--- a/CONTRATO.md
++++ b/CONTRATO.md
+@@ -63,6 +63,7 @@ activo) o `500` (excepción). Sin token: `401`.
+ | GET | `/selected_elements/` | — | Elementos seleccionados en Revit |
+ | GET | `/list_levels/` | — | Niveles con elevación |
+ | GET | `/element_properties/<element_id>` | `element_id` en la ruta | Propiedades y parámetros del elemento |
++| GET | `/project_coordinates/` | `units` (query: `m` por defecto, `mm`, `ft`) | `active_location`, `locations`, `shared_coordinates_set`, `internal_origin` (east, north, elevation, angle_degrees del origen interno en coordenadas compartidas), `project_base_point` y `survey_point` (internal y shared), `site` (latitud, longitud, `geo_coordinate_system`) |
+ 
+ ### Vistas
+ 
+@@ -131,7 +132,8 @@ activo) o `500` (excepción). Sin token: `401`.
+ | POST | `/material_quantities/` | `categories` | Cantidades de material |
+ | POST | `/clash_check/` | `set_a_categories`, `set_b_categories`, `max_clashes` | Interferencias detectadas |
+ | POST | `/export_ifc/` | `file_path`, `ifc_version`, `export_base_quantities`, `view_name` | Ruta del IFC |
+-| POST | `/link_file/` | `file_path`, `mode`, `position` | Vínculo creado |
++| POST | `/link_file/` | `file_path`, `mode`, `placement` (`origin` por defecto, `shared`, `center`, `site`), `position` | Vínculo creado, `placement` y `extents` (`max_distance_m` al origen interno, `far_from_origin` a más de 16 km, `beyond_revit_limit` a más de 33 km, `center_shared_m`, `hint`). `400` si `placement=shared` con un CAD y el modelo aún no tiene coordenadas compartidas |
++| POST | `/set_project_coordinates/` | `east`*, `north`*, `elevation` (0), `angle_degrees` (0), `units` (`m` por defecto, `mm`, `ft`), `point` (mm; por defecto el origen interno) | `ProjectLocation.SetProjectPosition` sobre la ubicación activa (si es la de solo lectura "Internal", activa otra o la duplica como "MCP"); devuelve `location`, `location_switched`, `before` y `after` como `/project_coordinates/` |
+ | POST | `/save_document/` | `file_path`, `overwrite` | Documento guardado |
+ 
+ ### Ejecución de código
+diff --git a/LLM.txt b/LLM.txt
+index e590fad..0c28f65 100644
+--- a/LLM.txt
++++ b/LLM.txt
+@@ -33,7 +33,9 @@ revit-mcp-python/
+ │   ├── structure_tools.py                    # Structural (grids, framing)
+ │   ├── annotation_tools.py                   # Annotation (dimensions, wall tags)
+ │   ├── analysis_tools.py                     # Analysis (filter, rooms, materials, statistics)
+-│   └── documentation_tools.py                # Documentation (sheets, schedules, export)
++│   ├── documentation_tools.py                # Documentation (sheets, schedules, export)
++│   ├── interop_tools.py                      # Interop (IFC export, link/import files with placement)
++│   └── coordinates_tools.py                  # Shared coordinates (get/set project coordinates)
+ ├── revit-mcp-python.extension/               # pyRevit Extension
+ │   ├── startup.py                            # Extension entry point - registers all routes
+ │   └── revit_mcp/                            # Routes API modules (organized by functionality)
+@@ -50,7 +52,10 @@ revit-mcp-python/
+ │       ├── structure.py                      # Structural routes (grids, framing)
+ │       ├── annotation.py                     # Annotation routes (dimensions, wall tags)
+ │       ├── analysis.py                       # Analysis routes (filter, rooms, materials, statistics)
+-│       └── documentation.py                  # Documentation routes (sheets, schedules, export)
++│       ├── documentation.py                  # Documentation routes (sheets, schedules, export)
++│       ├── interop.py                        # Interop routes (IFC, link/import with ImportPlacement)
++│       ├── coordinates.py                    # Shared coordinates routes (ProjectLocation, BasePoint)
++│       └── coordinates_core.py               # Pure helpers (units, placement names, distance to origin); tested in CPython
+ ├── requirements.txt                          # Python dependencies
+ ├── pyproject.toml                           # Project configuration
+ └── README.md                                # Project documentation
+diff --git a/README.md b/README.md
+index b2a02ad..db69777 100644
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,6 @@
+ # Revit MCP Server
+ 
+-MCP server for Autodesk Revit 2024/2025/2026/2027 via pyRevit — 48 tools for building design, editing, analysis, clash detection, MEP, interop, documentation, and model persistence.
++MCP server for Autodesk Revit 2024/2025/2026/2027 via pyRevit — 50 tools for building design, editing, analysis, clash detection, MEP, interop, shared coordinates, documentation, and model persistence.
+ 
+ Works with any MCP client: Claude Desktop, Claude Code, Cursor, Windsurf, Copilot, or any other MCP-compatible application.
+ 
+@@ -163,7 +163,7 @@ mcp dev main.py
+ 
+ Then open `http://127.0.0.1:6274` in your browser.
+ 
+-## Supported Tools (48)
++## Supported Tools (50)
+ 
+ ### Create (15)
+ 
+@@ -185,7 +185,7 @@ Then open `http://127.0.0.1:6274` in your browser.
+ | `create_detail_line` | Create view-specific detail lines |
+ | `create_view` | Create floor plans, sections, elevations, 3D views |
+ 
+-### Query (12)
++### Query (13)
+ 
+ | Tool | Description |
+ |------|-------------|
+@@ -201,8 +201,9 @@ Then open `http://127.0.0.1:6274` in your browser.
+ | `get_selected_elements` | Get currently selected elements |
+ | `list_category_parameters` | List parameters for a category |
+ | `get_element_properties` | Get all parameters and properties of an element |
++| `get_project_coordinates` | Shared coordinates: project position of the internal origin, survey point, project base point, site |
+ 
+-### Modify (8)
++### Modify (9)
+ 
+ | Tool | Description |
+ |------|-------------|
+@@ -215,6 +216,7 @@ Then open `http://127.0.0.1:6274` in your browser.
+ | `tag_elements` | Tag specific elements with annotation symbols |
+ | `transform_elements` | Move, copy, rotate, or mirror elements |
+ | `set_active_view` | Switch the active view in Revit |
++| `set_project_coordinates` | Give a model point real-world coordinates ("Specify Coordinates at a Point") so georeferenced files can be linked by shared coordinates |
+ 
+ ### Analyze (5)
+ 
+@@ -238,7 +240,7 @@ Then open `http://127.0.0.1:6274` in your browser.
+ | Tool | Description |
+ |------|-------------|
+ | `export_ifc` | Export model to IFC format (IFC2x3/IFC4) |
+-| `link_file` | Link or import DWG, DXF, DGN, SAT, SKP, 3DM, or RVT files |
++| `link_file` | Link or import DWG, DXF, DGN, SAT, SKP, 3DM, or RVT files, with `placement` origin / shared / center / site; reports how far the file landed from the internal origin |
+ | `load_family` | Load a Revit family (`.rfa`) from disk so its types can be placed |
+ | `save_document` | Save / Save-As the model to disk (persistence across sessions) |
+ 
+@@ -298,11 +300,32 @@ This server supports Revit 2024, 2025, 2026, and 2027 through centralized helper
+ 
+ No configuration needed — version detection is automatic via try/except at runtime.
+ 
+-> **Revit 2027 note:** Revit 2027 runs on **.NET 10** (vs .NET 8 in 2025/2026). This MCP server is pyRevit-based, so .NET compatibility is handled by pyRevit itself — ensure you run a **pyRevit build with Revit 2027 support**. None of the 48 tools use APIs removed in 2027 (AXM/FormIt import, `Mechanical.Zone` members, legacy rebar creation, or the dropped `EnergyDataSettings` properties).
++> **Revit 2027 note:** Revit 2027 runs on **.NET 10** (vs .NET 8 in 2025/2026). This MCP server is pyRevit-based, so .NET compatibility is handled by pyRevit itself — ensure you run a **pyRevit build with Revit 2027 support**. None of the 50 tools use APIs removed in 2027 (AXM/FormIt import, `Mechanical.Zone` members, legacy rebar creation, or the dropped `EnergyDataSettings` properties).
++
++## Georeferenced CAD files (Civil 3D, survey)
++
++Revit's internal origin cannot move and all geometry should stay within 16 km
++of it (Revit warns from 33 km and may silently fall back to center-to-center).
++A DWG in UTM or any survey system linked "origin to origin" therefore lands
++hundreds of kilometres away, however well georeferenced both files are. The
++supported workflow is the one Revit itself uses:
++
++1. `get_project_coordinates` — if `shared_coordinates_set` is false the model
++   has never been georeferenced.
++2. `set_project_coordinates(east, north, elevation)` — real-world coordinates of
++   the internal origin (for a Civil 3D surface, the `origen_sugerido` that the
++   Civil 3D MCP tool `extension_superficie` returns). Once per model.
++3. `link_file(file_path, placement="shared")` — the DWG's world coordinates are
++   read as shared coordinates and the surface lands next to the internal origin.
++   The response says how far the farthest corner is from the internal origin
++   and warns beyond 16 km.
+ 
+ ## Unit Handling
+ 
+ All tools accept **millimeters (mm)**. The server converts to Revit's internal feet.
++The two coordinate tools are the exception: `set_project_coordinates` and
++`get_project_coordinates` default to **meters** (`units="m"`, also `"mm"` or
++`"ft"`), because survey coordinates come from Civil 3D in drawing units.
+ 
+ | From | To mm |
+ |------|-------|
+diff --git a/revit_mcp/coordinates.py b/revit_mcp/coordinates.py
+new file mode 100644
+index 0000000..903caa1
+--- /dev/null
++++ b/revit_mcp/coordinates.py
+@@ -0,0 +1,249 @@
++# -*- coding: UTF-8 -*-
++"""
++Coordinates Module for Revit MCP
++Shared coordinates: project position, survey point and project base point.
++
++Why this exists: Revit's internal origin cannot move, and all geometry should
++stay within 16 km of it. A georeferenced CAD file (a Civil 3D surface in UTM
++sits hundreds of kilometres from 0,0) linked "Origin to Origin" lands that far
++away, so Revit warns on every link. The fix is to tell Revit which real-world
++coordinates the internal origin has (set_project_coordinates, the API
++equivalent of "Specify Coordinates at a Point") and then link the file
++"By Shared Coordinates" (link_file with placement="shared").
++"""
++
++from utils import get_element_name, get_element_id_value, suppress_warnings
++from seguridad import requiere_token
++from coordinates_core import (
++    describe_position,
++    normalize_units,
++    shared_coordinates_set,
++    to_feet,
++    from_feet,
++)
++from pyrevit import routes, revit, DB
++import json
++import math
++import traceback
++import logging
++
++logger = logging.getLogger(__name__)
++
++MM_TO_FEET = 1.0 / 304.8
++
++
++def _xyz_from_mm(point):
++    """Internal XYZ (feet) from a {"x", "y", "z"} dict in mm; the origin when empty."""
++    if not point:
++        return DB.XYZ.Zero
++    return DB.XYZ(
++        float(point.get("x", 0)) * MM_TO_FEET,
++        float(point.get("y", 0)) * MM_TO_FEET,
++        float(point.get("z", 0)) * MM_TO_FEET,
++    )
++
++
++def _point(xyz, units):
++    """{"x", "y", "z"} in the requested units from an internal XYZ (feet)."""
++    return {
++        "x": round(from_feet(xyz.X, units), 4),
++        "y": round(from_feet(xyz.Y, units), 4),
++        "z": round(from_feet(xyz.Z, units), 4),
++    }
++
++
++def _base_point(getter, doc, units):
++    """Project base point or survey point (Revit 2020+ BasePoint API); None if unavailable."""
++    try:
++        bp = getter(doc)
++        if bp is None:
++            return None
++        return {
++            "element_id": get_element_id_value(bp),
++            "internal": _point(bp.Position, units),
++            "shared": _point(bp.SharedPosition, units),
++        }
++    except Exception as error:
++        logger.debug("Base point not available: {}".format(str(error)))
++        return None
++
++
++def _site(doc):
++    """Site location: latitude/longitude and, from Revit 2018, the GIS coordinate system id."""
++    site = {}
++    try:
++        sl = doc.SiteLocation
++        site["latitude_degrees"] = round(math.degrees(sl.Latitude), 7)
++        site["longitude_degrees"] = round(math.degrees(sl.Longitude), 7)
++        try:
++            site["place_name"] = sl.PlaceName
++        except Exception:
++            pass
++        try:
++            # Same codes Civil 3D uses (e.g. "UTM84-18S"); empty when none assigned.
++            site["geo_coordinate_system"] = sl.GeoCoordinateSystemId or None
++        except Exception:
++            pass
++    except Exception as error:
++        logger.debug("Site location not available: {}".format(str(error)))
++    return site
++
++
++def describe_coordinates(doc, units="m"):
++    """Everything an agent needs to know about the model's coordinate systems."""
++    units = normalize_units(units)
++    active = doc.ActiveProjectLocation
++    pos = active.GetProjectPosition(DB.XYZ.Zero)
++    locations = []
++    try:
++        for loc in doc.ProjectLocations:
++            locations.append(get_element_name(loc))
++    except Exception:
++        pass
++    return {
++        "units": units,
++        "active_location": get_element_name(active),
++        "locations": locations,
++        "shared_coordinates_set": shared_coordinates_set(
++            pos.EastWest, pos.NorthSouth, pos.Elevation, pos.Angle),
++        "internal_origin": describe_position(
++            pos.EastWest, pos.NorthSouth, pos.Elevation, pos.Angle, units),
++        "project_base_point": _base_point(
++            lambda d: DB.BasePoint.GetProjectBasePoint(d), doc, units),
++        "survey_point": _base_point(
++            lambda d: DB.BasePoint.GetSurveyPoint(d), doc, units),
++        "site": _site(doc),
++    }
++
++
++def _new_project_position(doc, east_ft, north_ft, elevation_ft, angle_rad):
++    try:
++        return doc.Application.Create.NewProjectPosition(east_ft, north_ft, elevation_ft, angle_rad)
++    except Exception:
++        return DB.ProjectPosition(east_ft, north_ft, elevation_ft, angle_rad)
++
++
++def _set_position(doc, xyz, pos):
++    """SetProjectPosition on the active location.
++
++    Since Revit 2018 the read-only "Internal" location can be the active one;
++    then the first other location is activated and used (or a duplicate named
++    "MCP" when there is none). Returns (location, switched).
++    """
++    active = doc.ActiveProjectLocation
++    try:
++        active.SetProjectPosition(xyz, pos)
++        return active, False
++    except Exception as first_error:
++        active_id = get_element_id_value(active)
++        candidates = [loc for loc in doc.ProjectLocations
++                      if get_element_id_value(loc) != active_id]
++        if not candidates:
++            candidates = [active.Duplicate("MCP")]
++        target = candidates[0]
++        doc.ActiveProjectLocation = target
++        target.SetProjectPosition(xyz, pos)
++        logger.info("Active location '{}' rejected SetProjectPosition ({}); switched to '{}'".format(
++            get_element_name(active), str(first_error), get_element_name(target)))
++        return target, True
++
++
++def register_coordinates_routes(api):
++    """Register all coordinate routes with the API"""
++
++    @api.route("/project_coordinates/", methods=["GET"])
++    @requiere_token
++    def project_coordinates_handler(doc, request):
++        """Shared coordinates of the model (project position, base points, site)."""
++        try:
++            if not doc:
++                return routes.make_response(
++                    data={"error": "No active Revit document"}, status=503
++                )
++            query = getattr(request, "query_params", None) or {}
++            units = query.get("units") if isinstance(query, dict) else None
++            try:
++                units = normalize_units(units)
++            except ValueError as units_error:
++                return routes.make_response(data={"error": str(units_error)}, status=400)
++            return routes.make_response(data=describe_coordinates(doc, units))
++        except Exception as e:
++            logger.error("Failed to read project coordinates: {}".format(str(e)))
++            return routes.make_response(
++                data={"error": str(e), "traceback": traceback.format_exc()}, status=500
++            )
++
++    @api.route("/set_project_coordinates/", methods=["POST"])
++    @requiere_token
++    def set_project_coordinates_handler(doc, request):
++        """Give an internal point real-world shared coordinates ("Specify Coordinates at a Point")."""
++        try:
++            if not doc:
++                return routes.make_response(
++                    data={"error": "No active Revit document"}, status=503
++                )
++
++            data = json.loads(request.data) if isinstance(request.data, str) else request.data
++
++            east = data.get("east")
++            north = data.get("north")
++            if east is None or north is None:
++                return routes.make_response(
++                    data={"error": "east and north are required (real-world coordinates of the point)"},
++                    status=400,
++                )
++            try:
++                units = normalize_units(data.get("units"))
++                east_ft = to_feet(east, units)
++                north_ft = to_feet(north, units)
++                elevation_ft = to_feet(data.get("elevation") or 0, units)
++                angle_rad = math.radians(float(data.get("angle_degrees") or 0))
++            except (TypeError, ValueError) as value_error:
++                return routes.make_response(data={"error": str(value_error)}, status=400)
++
++            xyz = _xyz_from_mm(data.get("point"))
++            before = describe_coordinates(doc, units)
++
++            t = DB.Transaction(doc, "Set project coordinates via MCP")
++            t.Start()
++            suppress_warnings(t)
++            try:
++                pos = _new_project_position(doc, east_ft, north_ft, elevation_ft, angle_rad)
++                location, switched = _set_position(doc, xyz, pos)
++                t.Commit()
++            except Exception as tx_error:
++                if t.HasStarted() and not t.HasEnded():
++                    t.RollBack()
++                raise tx_error
++
++            after = describe_coordinates(doc, units)
++            origin = after["internal_origin"]
++            message = (
++                "Shared coordinates set on location '{}'{}: internal point ({}, {}, {}) mm is now "
++                "E={} N={} elevation={} {} with true north at {} degrees. Internal origin is now "
++                "E={} N={} elevation={} {}. Link georeferenced CAD files with placement='shared'."
++            ).format(
++                get_element_name(location),
++                " (activated instead of the read-only one)" if switched else "",
++                round(xyz.X / MM_TO_FEET, 1), round(xyz.Y / MM_TO_FEET, 1), round(xyz.Z / MM_TO_FEET, 1),
++                east, north, data.get("elevation") or 0, units, data.get("angle_degrees") or 0,
++                origin["east"], origin["north"], origin["elevation"], units,
++            )
++            return routes.make_response(
++                data={
++                    "status": "success",
++                    "message": message,
++                    "location": get_element_name(location),
++                    "location_switched": switched,
++                    "before": before,
++                    "after": after,
++                }
++            )
++
++        except Exception as e:
++            logger.error("Failed to set project coordinates: {}".format(str(e)))
++            return routes.make_response(
++                data={"error": str(e), "traceback": traceback.format_exc()}, status=500
++            )
++
++    logger.info("Coordinates routes registered successfully")
+diff --git a/revit_mcp/coordinates_core.py b/revit_mcp/coordinates_core.py
+new file mode 100644
+index 0000000..d904116
+--- /dev/null
++++ b/revit_mcp/coordinates_core.py
+@@ -0,0 +1,152 @@
++# -*- coding: UTF-8 -*-
++"""
++Pure helpers for shared coordinates (no pyRevit import).
++
++Unit conversion, link placement names and the distance-to-internal-origin
++check live here so they run the same in IronPython 2.7 (inside Revit) and in
++CPython (tests/test_coordinates_core.py).
++"""
++from __future__ import division
++
++import math
++
++METERS_PER_FOOT = 0.3048
++FEET_PER_METER = 1.0 / METERS_PER_FOOT
++
++# Autodesk guidance: keep all geometry within 10 miles (16 km) of the internal
++# origin. From 20 miles (33 km) Revit warns ("extents greater than 20 miles")
++# and, when linking a CAD file, silently replaces the requested placement by
++# "Center to Center", which loses the georeference.
++RECOMMENDED_RADIUS_M = 16093.4
++REVIT_LIMIT_M = 32186.9
++
++UNITS_TO_FEET = {
++    "m": FEET_PER_METER,
++    "mm": FEET_PER_METER / 1000.0,
++    "ft": 1.0,
++}
++
++PLACEMENTS = ("origin", "shared", "center", "site")
++
++_PLACEMENT_ALIASES = {
++    "origin": "origin",
++    "origin_to_origin": "origin",
++    "internal": "origin",
++    "internal_origin": "origin",
++    "shared": "shared",
++    "shared_coordinates": "shared",
++    "by_shared_coordinates": "shared",
++    "auto_by_shared_coordinates": "shared",
++    "center": "center",
++    "centered": "center",
++    "center_to_center": "center",
++    "site": "site",
++    "project_base_point": "site",
++    "by_project_base_point": "site",
++}
++
++_UNIT_ALIASES = {
++    "meter": "m", "meters": "m", "metre": "m", "metres": "m", "metro": "m", "metros": "m",
++    "millimeter": "mm", "millimeters": "mm", "millimetre": "mm", "millimetres": "mm",
++    "milimetro": "mm", "milimetros": "mm",
++    "foot": "ft", "feet": "ft", "pie": "ft", "pies": "ft",
++}
++
++
++def normalize_units(units):
++    """Return 'm', 'mm' or 'ft' ('m' when empty); raise ValueError otherwise."""
++    if units is None or str(units).strip() == "":
++        return "m"
++    key = str(units).strip().lower()
++    key = _UNIT_ALIASES.get(key, key)
++    if key not in UNITS_TO_FEET:
++        raise ValueError("units '{}' not supported. Use: m, mm, ft".format(units))
++    return key
++
++
++def to_feet(value, units="m"):
++    """Length in Revit internal units (feet) from a value in m, mm or ft."""
++    return float(value) * UNITS_TO_FEET[normalize_units(units)]
++
++
++def from_feet(value_ft, units="m"):
++    """Length in m, mm or ft from Revit internal units (feet)."""
++    return float(value_ft) / UNITS_TO_FEET[normalize_units(units)]
++
++
++def normalize_placement(name):
++    """Canonical link placement ('origin' when empty); raise ValueError if unknown.
++
++    origin  = Auto - Origin to Internal Origin
++    shared  = Auto - By Shared Coordinates
++    center  = Auto - Center to Center
++    site    = Auto - Origin to Project Base Point
++    """
++    if name is None or str(name).strip() == "":
++        return "origin"
++    key = str(name).strip().lower().replace("-", "_").replace(" ", "_")
++    try:
++        return _PLACEMENT_ALIASES[key]
++    except KeyError:
++        raise ValueError("placement '{}' not supported. Use: {}".format(
++            name, ", ".join(PLACEMENTS)))
++
++
++def shared_coordinates_set(east_ft, north_ft, elevation_ft, angle_rad, tolerance_ft=1e-6):
++    """True when the project position of a point differs from its internal coordinates.
++
++    With everything at zero the shared coordinate system coincides with the
++    internal one, so "By Shared Coordinates" places a file exactly like
++    "Origin to Origin".
++    """
++    return (abs(east_ft) > tolerance_ft or abs(north_ft) > tolerance_ft
++            or abs(elevation_ft) > tolerance_ft or abs(angle_rad) > 1e-9)
++
++
++def distance_from_origin_m(x_ft, y_ft, z_ft=0.0):
++    """Distance in metres from the internal origin to an internal point (feet)."""
++    return math.sqrt(x_ft * x_ft + y_ft * y_ft + z_ft * z_ft) * METERS_PER_FOOT
++
++
++def evaluate_extents(min_xyz_ft, max_xyz_ft):
++    """Distance of the farthest corner of a bounding box (feet) from the internal origin.
++
++    Returns a dict with max_distance_m, far_from_origin (beyond the 16 km
++    Autodesk recommends), beyond_revit_limit (beyond the 33 km at which Revit
++    warns and overrides the placement) and a hint when either flag is set.
++    """
++    farthest = 0.0
++    for x in (min_xyz_ft[0], max_xyz_ft[0]):
++        for y in (min_xyz_ft[1], max_xyz_ft[1]):
++            for z in (min_xyz_ft[2], max_xyz_ft[2]):
++                farthest = max(farthest, distance_from_origin_m(x, y, z))
++    result = {
++        "max_distance_m": round(farthest, 1),
++        "far_from_origin": farthest > RECOMMENDED_RADIUS_M,
++        "beyond_revit_limit": farthest > REVIT_LIMIT_M,
++    }
++    if result["beyond_revit_limit"]:
++        result["hint"] = (
++            "geometry is {:.1f} km from the internal origin, beyond the 33 km (20 miles) "
++            "Revit supports: Revit will warn and may override the placement. For a "
++            "georeferenced CAD file, call set_project_coordinates with the real-world "
++            "coordinates of the internal origin (e.g. the centre of the surface) and link "
++            "again with placement='shared'.".format(farthest / 1000.0))
++    elif result["far_from_origin"]:
++        result["hint"] = (
++            "geometry is {:.1f} km from the internal origin, beyond the 16 km (10 miles) "
++            "Autodesk recommends; precision may degrade. Consider set_project_coordinates "
++            "plus placement='shared'.".format(farthest / 1000.0))
++    return result
++
++
++def describe_position(east_ft, north_ft, elevation_ft, angle_rad, units="m"):
++    """Project position (ProjectPosition fields, feet and radians) in the given units and degrees."""
++    units = normalize_units(units)
++    return {
++        "east": round(from_feet(east_ft, units), 4),
++        "north": round(from_feet(north_ft, units), 4),
++        "elevation": round(from_feet(elevation_ft, units), 4),
++        "angle_degrees": round(math.degrees(angle_rad), 6),
++        "units": units,
++    }
+diff --git a/revit_mcp/interop.py b/revit_mcp/interop.py
+index 03e1bda..6b2103f 100644
+--- a/revit_mcp/interop.py
++++ b/revit_mcp/interop.py
+@@ -4,8 +4,14 @@ Interop Module for Revit MCP
+ Handles IFC export and external file linking/importing
+ """
+ 
+-from utils import get_element_name, get_element_id_value, suppress_warnings
++from utils import get_element_name, get_element_id_value, make_element_id, suppress_warnings
+ from seguridad import requiere_token
++from coordinates_core import (
++    METERS_PER_FOOT,
++    evaluate_extents,
++    normalize_placement,
++    shared_coordinates_set,
++)
+ from pyrevit import routes, revit, DB
+ import clr
+ import json
+@@ -18,6 +24,62 @@ logger = logging.getLogger(__name__)
+ MM_TO_FEET = 1.0 / 304.8
+ 
+ 
++def _import_placement(name):
++    """Revit ImportPlacement for a canonical placement name (coordinates_core)."""
++    return {
++        "origin": DB.ImportPlacement.Origin,     # Auto - Origin to Internal Origin
++        "shared": DB.ImportPlacement.Shared,     # Auto - By Shared Coordinates
++        "center": DB.ImportPlacement.Centered,   # Auto - Center to Center
++        "site": DB.ImportPlacement.Site,         # Auto - Origin to Project Base Point
++    }[name]
++
++
++def _extents(doc, element_id):
++    """Where the new link/import instance landed: distance of its bounding box to
++    the internal origin (coordinates_core.evaluate_extents) and the shared
++    coordinates of its centre, in metres. Best-effort: None when unavailable."""
++    if element_id is None:
++        return None
++    try:
++        elem = doc.GetElement(make_element_id(element_id))
++        bb = elem.get_BoundingBox(None) if elem is not None else None
++        if bb is None:
++            return None
++        result = evaluate_extents(
++            (bb.Min.X, bb.Min.Y, bb.Min.Z), (bb.Max.X, bb.Max.Y, bb.Max.Z))
++        center = DB.XYZ((bb.Min.X + bb.Max.X) / 2.0, (bb.Min.Y + bb.Max.Y) / 2.0,
++                        (bb.Min.Z + bb.Max.Z) / 2.0)
++        result["center_internal_m"] = {
++            "x": round(center.X * METERS_PER_FOOT, 3),
++            "y": round(center.Y * METERS_PER_FOOT, 3),
++            "z": round(center.Z * METERS_PER_FOOT, 3),
++        }
++        pos = doc.ActiveProjectLocation.GetProjectPosition(center)
++        result["center_shared_m"] = {
++            "east": round(pos.EastWest * METERS_PER_FOOT, 3),
++            "north": round(pos.NorthSouth * METERS_PER_FOOT, 3),
++            "elevation": round(pos.Elevation * METERS_PER_FOOT, 3),
++        }
++        return result
++    except Exception as error:
++        logger.debug("Could not evaluate link extents: {}".format(str(error)))
++        return None
++
++
++def _extents_text(extents):
++    """Human-readable summary of _extents() for the tool message."""
++    if not extents:
++        return ""
++    text = ". Farthest corner {} m from the internal origin".format(extents["max_distance_m"])
++    center = extents.get("center_shared_m")
++    if center:
++        text += "; centre at shared E={} N={} elevation={} m".format(
++            center["east"], center["north"], center["elevation"])
++    if extents.get("hint"):
++        text += ". WARNING: " + extents["hint"]
++    return text
++
++
+ def register_interop_routes(api):
+     """Register all interop routes with the API"""
+ 
+@@ -154,11 +216,33 @@ def register_interop_routes(api):
+ 
+             mode = data.get("mode", "link")
+             position = data.get("position")
++            try:
++                placement = normalize_placement(data.get("placement"))
++            except ValueError as placement_error:
++                return routes.make_response(data={"error": str(placement_error)}, status=400)
++            placement_enum = _import_placement(placement)
+ 
+             file_ext = os.path.splitext(file_path)[1].lower()
+             file_name = os.path.basename(file_path)
+             file_type = file_ext.lstrip(".").upper()
+ 
++            # "By Shared Coordinates" reads the CAD file's world coordinates as
++            # Revit shared coordinates. With the project position still at
++            # 0,0,0 that is the same as "Origin to Origin", so a georeferenced
++            # file would land hundreds of kilometres away: refuse and explain.
++            if placement == "shared" and file_ext != ".rvt":
++                pos = doc.ActiveProjectLocation.GetProjectPosition(DB.XYZ.Zero)
++                if not shared_coordinates_set(pos.EastWest, pos.NorthSouth, pos.Elevation, pos.Angle):
++                    return routes.make_response(
++                        data={"error": (
++                            "placement 'shared' needs shared coordinates, but the model's project "
++                            "position is still 0,0,0 (the shared system coincides with the internal "
++                            "one). Call set_project_coordinates with the real-world coordinates of "
++                            "the internal origin (for example the centre of the Civil 3D surface, "
++                            "'origen_sugerido' from extension_superficie) and link again.")},
++                        status=400,
++                    )
++
+             t = DB.Transaction(doc, "Link/Import File via MCP")
+             t.Start()
+             suppress_warnings(t)
+@@ -173,8 +257,13 @@ def register_interop_routes(api):
+                     link_result = DB.RevitLinkType.Create(doc, model_path, link_options)
+                     if link_result and link_result.ElementId:
+                         result_id = get_element_id_value(link_result.ElementId)
+-                        # Place instance
+-                        link_instance = DB.RevitLinkInstance.Create(doc, link_result.ElementId)
++                        # Place instance with the requested placement (3-argument
++                        # overload since Revit 2018; older API gets origin to origin)
++                        try:
++                            link_instance = DB.RevitLinkInstance.Create(
++                                doc, link_result.ElementId, placement_enum)
++                        except TypeError:
++                            link_instance = DB.RevitLinkInstance.Create(doc, link_result.ElementId)
+                         if link_instance:
+                             result_id = get_element_id_value(link_instance)
+ 
+@@ -192,7 +281,8 @@ def register_interop_routes(api):
+                         options = DB.SATImportOptions()
+                     else:
+                         options = DB.DWGImportOptions()
+-                        options.Placement = DB.ImportPlacement.Origin
++                    # Placement lives on BaseImportOptions, so every format takes it
++                    options.Placement = placement_enum
+ 
+                     idref = clr.Reference[DB.ElementId]()
+                     # SAT/SKP/3DM are import-only (not linkable); force import.
+@@ -219,6 +309,7 @@ def register_interop_routes(api):
+ 
+                 t.Commit()
+ 
++                extents = _extents(doc, result_id)
+                 return routes.make_response(
+                     data={
+                         "status": "success",
+@@ -226,8 +317,10 @@ def register_interop_routes(api):
+                         "file_name": file_name,
+                         "file_type": file_type,
+                         "mode": mode,
+-                        "message": "{}ed file '{}'".format(
+-                            mode.capitalize(), file_name
++                        "placement": placement,
++                        "extents": extents,
++                        "message": "{}ed file '{}' (placement: {}){}".format(
++                            mode.capitalize(), file_name, placement, _extents_text(extents)
+                         ),
+                     }
+                 )
+diff --git a/startup.py b/startup.py
+index 8162c52..6c357a3 100644
+--- a/startup.py
++++ b/startup.py
+@@ -218,6 +218,10 @@ def register_routes():
+ 
+         register_document_routes(api)
+ 
++        from revit_mcp.coordinates import register_coordinates_routes
++
++        register_coordinates_routes(api)
++
+         logger.info("All MCP routes registered successfully")
+ 
+     except Exception as e:
+diff --git a/tests/test_coordinates_core.py b/tests/test_coordinates_core.py
+new file mode 100644
+index 0000000..d9321b7
+--- /dev/null
++++ b/tests/test_coordinates_core.py
+@@ -0,0 +1,111 @@
++# -*- coding: utf-8 -*-
++"""Unit tests (CPython, pytest) for revit_mcp/coordinates_core.py.
++
++The module has no pyRevit dependency, so the conversions and the distance
++check that protect link_file / set_project_coordinates run here as they do
++inside Revit (IronPython 2.7). Run: uv run pytest tests/test_coordinates_core.py
++"""
++import math
++import os
++import sys
++
++import pytest
++
++sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "revit_mcp"))
++
++import coordinates_core as cc  # noqa: E402
++
++FT_PER_M = 1.0 / 0.3048
++
++
++# ---------------------------------------------------------------- units
++def test_units_to_and_from_feet():
++    assert cc.to_feet(1, "m") == pytest.approx(3.280839895)
++    assert cc.to_feet(304.8, "mm") == pytest.approx(1.0)
++    assert cc.to_feet(2.5, "ft") == 2.5
++    assert cc.from_feet(1, "m") == pytest.approx(0.3048)
++    assert cc.from_feet(1, "mm") == pytest.approx(304.8)
++    assert cc.from_feet(cc.to_feet(500000.0, "m"), "m") == pytest.approx(500000.0)
++
++
++@pytest.mark.parametrize("alias, expected", [
++    (None, "m"), ("", "m"), ("M", "m"), ("metros", "m"), ("meters", "m"),
++    ("mm", "mm"), ("millimeters", "mm"), ("ft", "ft"), ("feet", "ft"), ("pies", "ft"),
++])
++def test_normalize_units_aliases(alias, expected):
++    assert cc.normalize_units(alias) == expected
++
++
++def test_normalize_units_rejects_unknown():
++    with pytest.raises(ValueError, match="m, mm, ft"):
++        cc.normalize_units("inches")
++
++
++# ---------------------------------------------------------------- placement
++@pytest.mark.parametrize("name, expected", [
++    (None, "origin"), ("", "origin"), ("origin", "origin"), ("Origin to Origin", "origin"),
++    ("shared", "shared"), ("Shared", "shared"), ("by-shared-coordinates", "shared"),
++    ("By Shared Coordinates", "shared"),
++    ("center", "center"), ("Centered", "center"), ("center-to-center", "center"),
++    ("site", "site"), ("project base point", "site"),
++])
++def test_normalize_placement(name, expected):
++    assert cc.normalize_placement(name) == expected
++
++
++def test_normalize_placement_rejects_unknown():
++    with pytest.raises(ValueError, match="origin, shared, center, site"):
++        cc.normalize_placement("manual")
++
++
++# ---------------------------------------------------------------- shared coordinates flag
++def test_shared_coordinates_set():
++    assert cc.shared_coordinates_set(0, 0, 0, 0) is False
++    assert cc.shared_coordinates_set(1e-9, 0, 0, 0) is False, "numerical noise is not a position"
++    assert cc.shared_coordinates_set(500000 * FT_PER_M, 8500000 * FT_PER_M, 0, 0) is True
++    assert cc.shared_coordinates_set(0, 0, 2400 * FT_PER_M, 0) is True
++    assert cc.shared_coordinates_set(0, 0, 0, math.radians(1.5)) is True
++
++
++# ---------------------------------------------------------------- distance to the internal origin
++def test_distance_from_origin_in_metres():
++    assert cc.distance_from_origin_m(FT_PER_M, 0, 0) == pytest.approx(1.0)
++    assert cc.distance_from_origin_m(3 * FT_PER_M, 4 * FT_PER_M, 0) == pytest.approx(5.0)
++
++
++def test_extents_near_origin_are_fine():
++    r = cc.evaluate_extents((-100 * FT_PER_M, -50 * FT_PER_M, 0), (300 * FT_PER_M, 200 * FT_PER_M, 40 * FT_PER_M))
++    assert r["far_from_origin"] is False and r["beyond_revit_limit"] is False
++    assert "hint" not in r
++    assert r["max_distance_m"] == pytest.approx(math.sqrt(300 ** 2 + 200 ** 2 + 40 ** 2), abs=0.1)
++
++
++def test_extents_in_utm_are_beyond_the_revit_limit():
++    # A Civil 3D surface in UTM linked origin-to-origin: ~8 500 km from the internal origin
++    r = cc.evaluate_extents((500000 * FT_PER_M, 8500000 * FT_PER_M, 2400 * FT_PER_M),
++                            (501000 * FT_PER_M, 8501000 * FT_PER_M, 2500 * FT_PER_M))
++    assert r["beyond_revit_limit"] is True and r["far_from_origin"] is True
++    assert r["max_distance_m"] > 8000000
++    assert "set_project_coordinates" in r["hint"] and "placement='shared'" in r["hint"]
++    assert "33 km" in r["hint"]
++
++
++def test_extents_between_16_and_33_km_only_warn():
++    r = cc.evaluate_extents((20000 * FT_PER_M, 0, 0), (20500 * FT_PER_M, 500 * FT_PER_M, 0))
++    assert r["far_from_origin"] is True and r["beyond_revit_limit"] is False
++    assert "16 km" in r["hint"]
++
++
++def test_extents_use_the_farthest_corner():
++    # Box that straddles the origin: the far corner, not the centre, decides
++    r = cc.evaluate_extents((-20000 * FT_PER_M, 0, 0), (100 * FT_PER_M, 0, 0))
++    assert r["max_distance_m"] == pytest.approx(20000.0, abs=0.1)
++    assert r["far_from_origin"] is True
++
++
++# ---------------------------------------------------------------- position description
++def test_describe_position_converts_units_and_angle():
++    d = cc.describe_position(500000 * FT_PER_M, 8500000 * FT_PER_M, 2400 * FT_PER_M, math.radians(-2.5), "m")
++    assert d == {"east": 500000.0, "north": 8500000.0, "elevation": 2400.0, "angle_degrees": -2.5, "units": "m"}
++    d_mm = cc.describe_position(FT_PER_M, 0, 0, 0, "mm")
++    assert d_mm["east"] == pytest.approx(1000.0) and d_mm["units"] == "mm"
+diff --git a/tools/__init__.py b/tools/__init__.py
+index a76d39e..fa01618 100644
+--- a/tools/__init__.py
++++ b/tools/__init__.py
+@@ -27,6 +27,7 @@ def register_tools(mcp_server, revit_get_func, revit_post_func, revit_image_func
+     from .detail_tools import register_detail_tools
+     from .clash_tools import register_clash_tools
+     from .document_tools import register_document_tools
++    from .coordinates_tools import register_coordinates_tools
+ 
+     # Register tools from each module
+     register_status_tools(mcp_server, revit_get_func)
+@@ -53,3 +54,4 @@ def register_tools(mcp_server, revit_get_func, revit_post_func, revit_image_func
+     register_detail_tools(mcp_server, revit_get_func, revit_post_func, revit_image_func)
+     register_clash_tools(mcp_server, revit_get_func, revit_post_func, revit_image_func)
+     register_document_tools(mcp_server, revit_get_func, revit_post_func, revit_image_func)
++    register_coordinates_tools(mcp_server, revit_get_func, revit_post_func, revit_image_func)
+diff --git a/tools/coordinates_tools.py b/tools/coordinates_tools.py
+new file mode 100644
+index 0000000..ca7e428
+--- /dev/null
++++ b/tools/coordinates_tools.py
+@@ -0,0 +1,81 @@
++# -*- coding: utf-8 -*-
++"""Coordinate tools — shared coordinates for georeferenced links (Civil 3D, survey)"""
++
++from mcp.server.mcpserver import Context
++from .utils import format_response
++
++
++def register_coordinates_tools(mcp, revit_get, revit_post, revit_image=None):
++    """Register coordinate tools with the MCP server."""
++    _ = revit_image  # Acknowledge unused parameter
++
++    @mcp.tool()
++    async def get_project_coordinates(units: str = "m", ctx: Context = None) -> str:
++        """Read the model's shared coordinates (project position, survey point, base point).
++
++        Use it before linking a georeferenced CAD file (for example a Civil 3D
++        surface in UTM). If `shared_coordinates_set` is false, the internal
++        origin still has real-world coordinates 0,0,0 and any georeferenced
++        file linked "origin to origin" will land hundreds of kilometres away
++        (Revit warns from 33 km). Fix it with set_project_coordinates.
++
++        Returns, in `units`: `internal_origin` (east, north, elevation and the
++        angle to true north of the internal origin in the shared system),
++        `project_base_point` and `survey_point` (internal and shared position),
++        `site` (latitude, longitude, GIS coordinate system id when assigned, in
++        the same codes Civil 3D uses, e.g. "UTM84-18S") and the project
++        locations (`active_location`, `locations`).
++
++        Args:
++            units: "m" (default), "mm" or "ft" for the returned lengths
++            ctx: MCP context for logging
++        """
++        response = await revit_get("/project_coordinates/", ctx, params={"units": units})
++        return format_response(response)
++
++    @mcp.tool()
++    async def set_project_coordinates(
++        east: float,
++        north: float,
++        elevation: float = 0.0,
++        angle_degrees: float = 0.0,
++        units: str = "m",
++        point: dict = None,
++        ctx: Context = None,
++    ) -> str:
++        """Give a model point real-world coordinates ("Specify Coordinates at a Point").
++
++        This is how a Revit model gets georeferenced: the internal origin stays
++        where it is and the shared coordinate system (survey point) is offset
++        so that `point` has the coordinates `east`, `north`, `elevation`.
++        Do it ONCE per model, before linking a georeferenced DWG with
++        link_file(placement="shared"); afterwards the DWG's world coordinates
++        are read as shared coordinates and the file lands next to the internal
++        origin instead of 500 km away.
++
++        Typical values: the centre of the Civil 3D surface (tool
++        `extension_superficie` of the Civil 3D MCP returns `origen_sugerido`)
++        or the known coordinates of a grid intersection. Keep `angle_degrees`
++        at 0 when the DWG is aligned to grid north (the usual case).
++
++        Args:
++            east: Real-world easting (X) of `point`, in `units`
++            north: Real-world northing (Y) of `point`, in `units`
++            elevation: Real-world elevation (Z) of `point`, in `units` (default 0)
++            angle_degrees: Angle from project north to true north, counter-clockwise (default 0)
++            units: Units of east/north/elevation: "m" (default), "mm" or "ft"
++            point: Internal point {"x", "y", "z"} in mm that receives those coordinates
++                (default: the internal origin 0,0,0)
++            ctx: MCP context for logging
++        """
++        data = {
++            "east": east,
++            "north": north,
++            "elevation": elevation,
++            "angle_degrees": angle_degrees,
++            "units": units,
++        }
++        if point is not None:
++            data["point"] = point
++        response = await revit_post("/set_project_coordinates/", data, ctx)
++        return format_response(response)
+diff --git a/tools/interop_tools.py b/tools/interop_tools.py
+index 7f3bb2e..4b117e3 100644
+--- a/tools/interop_tools.py
++++ b/tools/interop_tools.py
+@@ -43,6 +43,7 @@ def register_interop_tools(mcp, revit_get, revit_post, revit_image=None):
+     async def link_file(
+         file_path: str,
+         mode: str = "link",
++        placement: str = "origin",
+         position: dict = None,
+         ctx: Context = None,
+     ) -> str:
+@@ -51,13 +52,28 @@ def register_interop_tools(mcp, revit_get, revit_post, revit_image=None):
+         Supports DWG, DXF, DGN (CAD files) and RVT (Revit links).
+         Linked files maintain a live connection; imported files are embedded.
+ 
++        Georeferenced CAD files (a Civil 3D surface or site plan in UTM or any
++        survey system) must NOT be placed "origin": their coordinates are
++        hundreds of kilometres from Revit's internal origin and Revit warns
++        (33 km limit) and may silently fall back to center-to-center. Instead:
++        1. get_project_coordinates: if `shared_coordinates_set` is false,
++        2. set_project_coordinates(east, north, elevation) with the real-world
++           coordinates of the internal origin (e.g. the surface centre), then
++        3. link_file(..., placement="shared").
++        The response reports how far the file landed from the internal origin
++        and warns when it is beyond 16 km.
++
+         Args:
+-            file_path: Path to the file (DWG, DXF, DGN, or RVT)
++            file_path: Path to the file (DWG, DXF, DGN, SAT, SKP, 3DM or RVT)
+             mode: "link" (default, maintains connection) or "import" (embeds copy)
++            placement: "origin" (default, Auto - Origin to Internal Origin),
++                "shared" (Auto - By Shared Coordinates; requires shared coordinates,
++                see set_project_coordinates), "center" (Auto - Center to Center) or
++                "site" (Auto - Origin to Project Base Point)
+             position: Optional placement offset {"x", "y", "z"} in mm
+             ctx: MCP context for logging
+         """
+-        data = {"file_path": file_path, "mode": mode}
++        data = {"file_path": file_path, "mode": mode, "placement": placement}
+         if position is not None:
+             data["position"] = position
+         response = await revit_post("/link_file/", data, ctx)
+-- 
+2.43.0
+
